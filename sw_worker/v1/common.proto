@@ -1,0 +1,59 @@
+syntax = "proto3";
+
+package sw_worker.v1;
+
+// Тип файла документа SolidWorks.
+enum FileType {
+  FILE_TYPE_UNSPECIFIED = 0;
+  FILE_TYPE_PART        = 1; // .sldprt
+  FILE_TYPE_ASSEMBLY    = 2; // .sldasm
+  FILE_TYPE_DRAWING     = 3; // .slddrw
+}
+
+// Единственный узел в графе зависимостей.
+// Используется как выходные данные CollectDependencies и как входные данные RebuildWithDesignations / RebuildFiles.
+message FileNode {
+  // Имя файла без пути к каталогу (например, "assembly.sldasm").
+  string file_name = 1;
+
+  // Тип документа SolidWorks.
+  FileType file_type = 2;
+
+  // Прямые ссылки по file_name.
+  repeated string references = 3;
+
+  // Значение пользовательского свойства «Обозначение» для записи.
+  // Устанавливается оркестратором перед отправкой в RebuildWithDesignations.
+  // Если не задано — файл пересобирается, но его свойство не изменяется.
+  optional string designation = 4;
+}
+
+// Граф зависимостей с единственным корневым файлом.
+message DependencyGraph {
+  // Имя корневого файла (точка входа данного графа).
+  string root_file_name = 1;
+
+  // Все узлы, включая корневой. Порядок не важен.
+  repeated FileNode nodes = 2;
+}
+
+// Результат операции для отдельного файла (RebuildWithDesignations, RebuildFiles).
+message FileResult {
+  // Имя файла без пути к каталогу.
+  string file_name     = 1;
+
+  // True, если операция над данным файлом завершилась успешно.
+  bool   success       = 2;
+
+  // Описание ошибки; пустая строка, если success равно true.
+  string error_message = 3;
+}
+
+// Файл, который не удалось прочитать в ходе CollectDependencies.
+message FileError {
+  // Имя файла без пути к каталогу.
+  string file_name     = 1;
+
+  // Описание ошибки.
+  string error_message = 2;
+}

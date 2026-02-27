@@ -1,0 +1,174 @@
+syntax = "proto3";
+
+package sw_worker.v1;
+
+import "sw_worker/v1/common.proto";
+
+// gRPC-сервис для обработки CAD-файлов SolidWorks.
+// Все операции унарные и атомарные. Запросы сериализуются внутри сервиса.
+// Каждый запрос требует изолированного working_directory с flat-copy всех
+// нужных файлов (все файлы в одном каталоге, уникальные имена — ответственность оркестратора).
+service SwWorkerService {
+
+  // Построить графы зависимостей для файлов по указанному пути.
+  // path может быть путём к файлу (один корень) или путём к каталогу (все SW-файлы в каталоге).
+  // Возвращает по одному графу на каждый обнаруженный корень. Деталь без ссылок даёт
+  // граф из одного узла. Файлы не открывает — использует GetDocumentDependencies2.
+  //
+  // Ошибки:
+  //   INVALID_ARGUMENT  — path не существует или не является SW-файлом / каталогом
+  //   UNAVAILABLE       — процесс SolidWorks не готов
+  //   INTERNAL          — непредвиденный сбой SW
+  rpc CollectDependencies(CollectDependenciesRequest) returns (CollectDependenciesResponse);
+
+  // Записать пользовательское свойство «Обозначение» в файлы, у которых задан
+  // FileNode.designation, затем принудительно пересобрать и сохранить все файлы.
+  // Файлы без заданного designation пересобираются, но их свойство не изменяется.
+  // Сервис определяет порядок пересборки по графу (leaves → root:
+  // сначала детали, затем сборки, чертежи последними).
+  // При ошибке на отдельном файле продолжает работу; результаты содержат успех/ошибку по каждому файлу.
+  //
+  // Ошибки:
+  //   INVALID_ARGUMENT    — working_directory не существует или графы пусты
+  //   UNAVAILABLE         — процесс SolidWorks не готов
+  //   RESOURCE_EXHAUSTED  — очередь запросов переполнена
+  //   INTERNAL            — непредвиденный сбой SW
+  rpc RebuildWithDesignations(RebuildWithDesignationsRequest) returns (RebuildWithDesignationsResponse);
+
+  // Открыть, принудительно пересобрать и сохранить файлы SolidWorks.
+  // Сервис определяет порядок пересборки по графу (leaves → root:
+  // сначала детали, затем сборки, чертежи последними).
+  // При ошибке на отдельном файле продолжает работу; результаты содержат успех/ошибку по каждому файлу.
+  //
+  // Ошибки:
+  //   INVALID_ARGUMENT    — working_directory не существует или графы пусты
+  //   UNAVAILABLE         — процесс SolidWorks не готов
+  //   RESOURCE_EXHAUSTED  — очередь запросов переполнена
+  //   INTERNAL            — непредвиденный сбой SW
+  rpc RebuildFiles(RebuildFilesRequest) returns (RebuildFilesResponse);
+
+  // Вернуть текущее состояние здоровья сервиса, состояние очереди и оценки ETA.
+  // Не ставится в очередь — возвращает результат немедленно, не ожидая SW-сессии.
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+
+  // Отменить конкретные операции по ID (из GetStatus → operations[*].id).
+  // operation_ids не должен быть пустым — иначе возвращается INVALID_ARGUMENT.
+  // Активная операция останавливается на ближайшей безопасной границе файла (не посередине файла).
+  // Опрашивать GetStatus, пока operations не станет пустым, прежде чем освобождать хранилище.
+  //
+  // Ошибки:
+  //   INVALID_ARGUMENT  — operation_ids пуст
+  rpc Cancel(CancelRequest) returns (CancelResponse);
+}
+
+// ── CollectDependencies ──────────────────────────────────────────────────────
+
+message CollectDependenciesRequest {
+  // Путь к SW-файлу (один граф) или к каталогу (по одному графу на каждый обнаруженный корень).
+  string path = 1;
+}
+
+message CollectDependenciesResponse {
+  // Графы зависимостей, по одному на каждый обнаруженный корневой файл.
+  repeated DependencyGraph graphs = 1;
+
+  // Имена файлов, на которые есть ссылки в графах, но которые не найдены по указанному пути.
+  repeated string missing = 2;
+
+  // Файлы, которые не удалось прочитать (например, повреждённые или заблокированные).
+  repeated FileError errors = 3;
+}
+
+// ── RebuildWithDesignations ──────────────────────────────────────────────────
+
+message RebuildWithDesignationsRequest {
+  // Каталог, в котором размещены все файлы (flat-copy буфер).
+  string working_directory = 1;
+
+  // Графы из CollectDependencies, дополненные оркестратором.
+  // FileNode.designation задан     → записать обозначение, затем пересобрать.
+  // FileNode.designation не задан  → только пересборка, свойство не изменяется.
+  repeated DependencyGraph graphs = 2;
+}
+
+// Результаты по каждому файлу в порядке обхода графа (leaves → root).
+message RebuildWithDesignationsResponse {
+  repeated FileResult results = 1;
+}
+
+// ── RebuildFiles ─────────────────────────────────────────────────────────────
+
+message RebuildFilesRequest {
+  // Каталог, в котором размещены все файлы (flat-copy буфер).
+  string working_directory = 1;
+
+  // Графы, определяющие какие файлы пересобирать и их структуру зависимостей.
+  // Сервис определяет порядок пересборки по графу (leaves → root:
+  // сначала детали, затем сборки, чертежи последними).
+  repeated DependencyGraph graphs = 2;
+}
+
+// Результаты по каждому файлу в порядке обхода графа (leaves → root).
+message RebuildFilesResponse {
+  repeated FileResult results = 1;
+}
+
+// ── GetStatus ────────────────────────────────────────────────────────────────
+
+message GetStatusRequest {}
+
+// Описывает отдельную операцию — активную или в очереди.
+// Для операций в очереди (ещё не запущенных): files_total/files_done/elapsed_seconds = 0,
+// eta_seconds = -1.
+message OperationInfo {
+  string        id              = 1; // UUID, назначаемый сервером; стабилен в течение всей жизни операции
+  OperationType type            = 2;
+  string        path            = 3; // путь (CollectDependencies) или working_directory
+  int32         files_total     = 4;
+  int32         files_done      = 5;
+  int64         elapsed_seconds = 6;
+  int64         eta_seconds     = 7; // -1 = неизвестно
+}
+
+// Текущее состояние здоровья сервиса, состояние очереди и оценки ETA.
+message GetStatusResponse {
+  // Здоровье
+  bool  is_healthy = 1; // sw_running && !tainted
+  bool  sw_running = 2;
+  bool  tainted    = 3;
+  int64 memory_mb  = 4;
+
+  // Ёмкость
+  int32 queue_limit = 5; // максимальная принимаемая глубина очереди
+
+  // ETA завершения всей очереди (всех операций); -1 = неизвестно или очередь пуста
+  int64 eta_queue_seconds = 6;
+
+  // operations[0] = активная операция (если есть), operations[1..] = очередь по порядку.
+  // Пусто, если сервис простаивает. queue_depth = operations.size().
+  repeated OperationInfo operations = 7;
+}
+
+// ── Cancel ───────────────────────────────────────────────────────────────────
+
+// Определяет операции для отмены.
+message CancelRequest {
+  // ID операций для отмены (из GetStatus → operations[*].id).
+  // Не должен быть пустым; иначе возвращается INVALID_ARGUMENT.
+  repeated string operation_ids = 1;
+}
+
+// Результат вызова Cancel.
+message CancelResponse {
+  int32           cancelled_count = 1; // количество отменённых операций
+  repeated string not_found_ids   = 2; // ID, которые не найдены (уже завершены или никогда не существовали)
+}
+
+// ── OperationType ─────────────────────────────────────────────────────────────
+
+enum OperationType {
+  OPERATION_TYPE_UNSPECIFIED               = 0;
+  OPERATION_TYPE_COLLECT_DEPENDENCIES      = 1;
+  OPERATION_TYPE_REBUILD_WITH_DESIGNATIONS = 2;
+  OPERATION_TYPE_REBUILD_FILES             = 3;
+}
