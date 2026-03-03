@@ -10,8 +10,40 @@ enum FileType {
   FILE_TYPE_DRAWING     = 3; // .slddrw
 }
 
-// Единственный узел в графе зависимостей.
-// Используется как выходные данные CollectDependencies и как входные данные RebuildWithDesignations / RebuildFiles.
+// ── DAG зависимостей ─────────────────────────────────────────────────────────
+//
+// Два уровня представления:
+//   files       — файловый уровень (общие свойства файла, тип, чертежи)
+//   nodes       — конфигурационный уровень (DAG: parent-config → child-config с count)
+//
+// Конфигурационный граф — DAG с orphan nodes:
+//   - Множество корней (все конфигурации корневого файла, кроме FlatPattern)
+//   - Shared nodes (одна конфигурация детали используется несколькими parent)
+//   - Orphan configs (конфигурация существует, но не используется ни одним parent)
+
+// Граф зависимостей.
+message DependencyGraph {
+  // Конфигурационные узлы DAG.
+  // Ключ — "filename:config" (например, "assembly.sldasm:Default").
+  // Содержит узлы для всех конфигураций всех файлов, включая orphan.
+  // FlatPattern конфигурации исключены.
+  map<string, ConfigNode> nodes = 1;
+
+  // ID корневых конфигурационных узлов (ключи в nodes).
+  repeated string roots = 2;
+
+  // Файловые данные. Ключ — имя файла (например, "assembly.sldasm").
+  // Свойства уровня файла, общие для всех конфигураций.
+  map<string, FileNode> files = 3;
+
+  // Имена файлов, на которые есть ссылки, но которые не найдены в буфере.
+  repeated string missing = 4;
+
+  // Файлы, которые не удалось прочитать (повреждённые, заблокированные).
+  repeated FileError errors = 5;
+}
+
+// Файловый узел — общие данные файла, не зависящие от конфигурации.
 message FileNode {
   // Имя файла без пути к каталогу (например, "assembly.sldasm").
   string file_name = 1;
@@ -19,22 +51,50 @@ message FileNode {
   // Тип документа SolidWorks.
   FileType file_type = 2;
 
-  // Прямые ссылки по file_name.
-  repeated string references = 3;
+  // Custom properties уровня файла (CustomPropertyManager("")).
+  // Ключ — имя свойства, значение — resolved (вычисленное).
+  // Фильтруются по PropertyFilter.FileProperties из конфигурации сервиса.
+  map<string, string> properties = 3;
 
-  // Значение пользовательского свойства «Обозначение» для записи.
-  // Устанавливается оркестратором перед отправкой в RebuildWithDesignations.
-  // Если не задано — файл пересобирается, но его свойство не изменяется.
-  optional string designation = 4;
+  // Содержит ли файл конфигурацию FlatPattern → сигнал для генерации DXF-развёрток.
+  bool has_flat_pattern = 4;
+
+  // Имя файла чертежа-attachment (если найден в буфере). Пустая строка — чертежа нет.
+  string drawing_file = 5;
+
+  // Конфигурации модели, на которые ссылается чертёж (из IView.ReferencedConfiguration).
+  // Пусто, если чертежа нет.
+  repeated string drawing_configs = 6;
 }
 
-// Граф зависимостей с единственным корневым файлом.
-message DependencyGraph {
-  // Имя корневого файла (точка входа данного графа).
-  string root_file_name = 1;
+// Конфигурационный узел DAG — одна конфигурация одного файла.
+message ConfigNode {
+  // Имя файла без пути к каталогу.
+  string file_name = 1;
 
-  // Все узлы, включая корневой. Порядок не важен.
-  repeated FileNode nodes = 2;
+  // Имя конфигурации SolidWorks.
+  string config_name = 2;
+
+  // Дочерние компоненты (только активные, не suppressed в данной конфигурации).
+  repeated ChildRef children = 3;
+
+  // True, если конфигурация не используется ни одной родительской
+  // конфигурацией в графе.
+  bool is_orphan = 4;
+
+  // Custom properties уровня конфигурации (CustomPropertyManager(config_name)).
+  // Ключ — имя свойства, значение — resolved (вычисленное).
+  // Фильтруются по PropertyFilter.ConfigProperties из конфигурации сервиса.
+  map<string, string> properties = 5;
+}
+
+// Ребро конфигурационного DAG: ссылка на дочерний компонент с количеством экземпляров.
+message ChildRef {
+  // ID дочернего узла в формате "filename:config" (ключ в nodes).
+  string node_id = 1;
+
+  // Количество экземпляров компонента в родительской конфигурации.
+  uint32 count = 2;
 }
 
 // Результат операции для отдельного файла (RebuildWithDesignations, RebuildFiles).

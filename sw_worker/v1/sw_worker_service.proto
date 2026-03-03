@@ -70,24 +70,20 @@ message CollectDependenciesRequest {
 
 message CollectDependenciesResponse {
   // Графы зависимостей, по одному на каждый обнаруженный корневой файл.
+  // Каждый граф содержит файловый и конфигурационный уровни, а также missing/errors.
   repeated DependencyGraph graphs = 1;
-
-  // Имена файлов, на которые есть ссылки в графах, но которые не найдены по указанному пути.
-  repeated string missing = 2;
-
-  // Файлы, которые не удалось прочитать (например, повреждённые или заблокированные).
-  repeated FileError errors = 3;
 }
 
 // ── RebuildWithDesignations ──────────────────────────────────────────────────
 
+// TODO: адаптировать под новый DependencyGraph.
+// designation переехал — нужно определить: per-file или per-config?
+// Пока оркестратор передаёт графы как есть из CollectDependencies.
 message RebuildWithDesignationsRequest {
   // Каталог, в котором размещены все файлы (flat-copy буфер).
   string working_directory = 1;
 
   // Графы из CollectDependencies, дополненные оркестратором.
-  // FileNode.designation задан     → записать обозначение, затем пересобрать.
-  // FileNode.designation не задан  → только пересборка, свойство не изменяется.
   repeated DependencyGraph graphs = 2;
 }
 
@@ -98,13 +94,13 @@ message RebuildWithDesignationsResponse {
 
 // ── RebuildFiles ─────────────────────────────────────────────────────────────
 
+// TODO: адаптировать под новый DependencyGraph.
+// Порядок пересборки теперь определяется конфигурационным DAG (leaves → root).
 message RebuildFilesRequest {
   // Каталог, в котором размещены все файлы (flat-copy буфер).
   string working_directory = 1;
 
   // Графы, определяющие какие файлы пересобирать и их структуру зависимостей.
-  // Сервис определяет порядок пересборки по графу (leaves → root:
-  // сначала детали, затем сборки, чертежи последними).
   repeated DependencyGraph graphs = 2;
 }
 
