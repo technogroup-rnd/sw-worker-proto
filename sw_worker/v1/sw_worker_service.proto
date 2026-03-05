@@ -36,18 +36,6 @@ service SwWorkerService {
   //   INTERNAL            — непредвиденный сбой SW
   rpc RebuildWithProperties(RebuildWithPropertiesRequest) returns (RebuildWithPropertiesResponse);
 
-  // Открыть, принудительно пересобрать и сохранить файлы SolidWorks.
-  // Сервис определяет порядок пересборки по графу (leaves → root:
-  // сначала детали, затем сборки, чертежи последними).
-  // При ошибке на отдельном файле продолжает работу; results содержат успех/ошибку по каждому файлу.
-  //
-  // Ошибки:
-  //   INVALID_ARGUMENT    — working_directory не существует или графы пусты
-  //   UNAVAILABLE         — процесс SolidWorks не готов
-  //   RESOURCE_EXHAUSTED  — очередь запросов переполнена
-  //   INTERNAL            — непредвиденный сбой SW
-  rpc RebuildFiles(RebuildFilesRequest) returns (RebuildFilesResponse);
-
   // Вернуть текущее состояние здоровья сервиса, состояние очереди и оценки ETA.
   // Не ставится в очередь — возвращает результат немедленно, не ожидая SW-сессии.
   rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
@@ -95,21 +83,6 @@ message RebuildWithPropertiesResponse {
   // properties перечитываются из SW в рамках того же открытого документа (без дополнительных
   // открытий файлов). write_properties в response не заполняются (только для чтения).
   repeated DependencyGraph graphs = 2;
-}
-
-// ── RebuildFiles ─────────────────────────────────────────────────────────────
-
-message RebuildFilesRequest {
-  // Каталог, в котором размещены все файлы (flat-copy буфер).
-  string working_directory = 1;
-
-  // Графы, определяющие какие файлы пересобирать и их структуру зависимостей.
-  repeated DependencyGraph graphs = 2;
-}
-
-// Результаты по каждому файлу в порядке обхода графа (leaves → root).
-message RebuildFilesResponse {
-  repeated FileResult results = 1;
 }
 
 // ── GetStatus ────────────────────────────────────────────────────────────────
@@ -166,8 +139,7 @@ message CancelResponse {
 // ── OperationType ─────────────────────────────────────────────────────────────
 
 enum OperationType {
-  OPERATION_TYPE_UNSPECIFIED              = 0;
-  OPERATION_TYPE_COLLECT_DEPENDENCIES     = 1;
-  OPERATION_TYPE_REBUILD_WITH_PROPERTIES  = 2;
-  OPERATION_TYPE_REBUILD_FILES            = 3;
+  OPERATION_TYPE_UNSPECIFIED             = 0;
+  OPERATION_TYPE_COLLECT_DEPENDENCIES    = 1;
+  OPERATION_TYPE_REBUILD_WITH_PROPERTIES = 2;
 }
