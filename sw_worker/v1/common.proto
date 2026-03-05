@@ -54,6 +54,7 @@ message FileNode {
   // Custom properties уровня файла (CustomPropertyManager("")).
   // Ключ — имя свойства, значение — resolved (вычисленное).
   // Фильтруются по PropertyFilter.FileProperties из конфигурации сервиса.
+  // Используется только для чтения; не записывается в SW операцией RebuildWithProperties.
   map<string, string> properties = 3;
 
   // Содержит ли файл конфигурацию FlatPattern → сигнал для генерации DXF-развёрток.
@@ -64,6 +65,13 @@ message FileNode {
   // Относятся ко всем конфигурациям файла.
   // Исключены: .sldprt, .sldasm (уже в графе зависимостей).
   repeated string companion_files = 5;
+
+  // Sparse map свойств уровня файла для записи в SW (CustomPropertyManager("")).
+  // Используется только в RebuildWithProperties.
+  // Оркестратор указывает только те свойства, которые нужно создать или перезаписать.
+  // Тип существующего свойства сохраняется; новые свойства создаются как Text.
+  // Значения передаются в строковом формате в локали SW-процесса (числа: запятая как разделитель).
+  map<string, string> write_properties = 6;
 }
 
 // Конфигурационный узел DAG — одна конфигурация одного файла.
@@ -84,12 +92,20 @@ message ConfigNode {
   // Custom properties уровня конфигурации (CustomPropertyManager(config_name)).
   // Ключ — имя свойства, значение — resolved (вычисленное).
   // Фильтруются по PropertyFilter.ConfigProperties из конфигурации сервиса.
+  // Используется только для чтения; не записывается в SW операцией RebuildWithProperties.
   map<string, string> properties = 5;
 
   // Сопутствующие файлы, специфичные для данной конфигурации.
   // Определяются по наличию [config_name] в имени файла.
   // Только имена файлов без пути.
   repeated string companion_files = 6;
+
+  // Sparse map свойств уровня конфигурации для записи в SW (CustomPropertyManager(config_name)).
+  // Используется только в RebuildWithProperties.
+  // Оркестратор указывает только те свойства, которые нужно создать или перезаписать.
+  // Тип существующего свойства сохраняется; новые свойства создаются как Text.
+  // Значения передаются в строковом формате в локали SW-процесса (числа: запятая как разделитель).
+  map<string, string> write_properties = 7;
 }
 
 // Ребро конфигурационного DAG: ссылка на дочерний компонент с количеством экземпляров.
@@ -101,7 +117,7 @@ message ChildRef {
   uint32 count = 2;
 }
 
-// Результат операции для отдельного файла (RebuildWithDesignations, RebuildFiles).
+// Результат операции для отдельного файла (RebuildFiles, RebuildWithProperties).
 message FileResult {
   // Имя файла без пути к каталогу.
   string file_name     = 1;

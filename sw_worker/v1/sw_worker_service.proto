@@ -11,7 +11,7 @@ import "sw_worker/v1/common.proto";
 service SwWorkerService {
 
   // Построить графы зависимостей для файлов по указанному пути.
-  // path может быть путём к файлу (один корень) или путём к каталогу (все SW-файлы в каталоге).
+  // path может быть путём к файлу (один граф) или путём к каталогу (все SW-файлы в каталоге).
   // Возвращает по одному графу на каждый обнаруженный корень. Деталь без ссылок даёт
   // граф из одного узла. Файлы не открывает — использует GetDocumentDependencies2.
   //
@@ -21,24 +21,25 @@ service SwWorkerService {
   //   INTERNAL          — непредвиденный сбой SW
   rpc CollectDependencies(CollectDependenciesRequest) returns (CollectDependenciesResponse);
 
-  // Записать пользовательское свойство «Обозначение» в файлы, у которых задан
-  // FileNode.designation, затем принудительно пересобрать и сохранить все файлы.
-  // Файлы без заданного designation пересобираются, но их свойство не изменяется.
+  // Записать пользовательские свойства в файлы (FileNode.write_properties,
+  // ConfigNode.write_properties), затем принудительно пересобрать и сохранить все файлы.
+  // Файлы без write_properties пересобираются, но их свойства не изменяются.
   // Сервис определяет порядок пересборки по графу (leaves → root:
   // сначала детали, затем сборки, чертежи последними).
-  // При ошибке на отдельном файле продолжает работу; результаты содержат успех/ошибку по каждому файлу.
+  // После записи и rebuild свойства перечитываются и возвращаются в response.
+  // При ошибке на отдельном файле продолжает работу; results содержат успех/ошибку по каждому файлу.
   //
   // Ошибки:
   //   INVALID_ARGUMENT    — working_directory не существует или графы пусты
   //   UNAVAILABLE         — процесс SolidWorks не готов
   //   RESOURCE_EXHAUSTED  — очередь запросов переполнена
   //   INTERNAL            — непредвиденный сбой SW
-  rpc RebuildWithDesignations(RebuildWithDesignationsRequest) returns (RebuildWithDesignationsResponse);
+  rpc RebuildWithProperties(RebuildWithPropertiesRequest) returns (RebuildWithPropertiesResponse);
 
   // Открыть, принудительно пересобрать и сохранить файлы SolidWorks.
   // Сервис определяет порядок пересборки по графу (leaves → root:
   // сначала детали, затем сборки, чертежи последними).
-  // При ошибке на отдельном файле продолжает работу; результаты содержат успех/ошибку по каждому файлу.
+  // При ошибке на отдельном файле продолжает работу; results содержат успех/ошибку по каждому файлу.
   //
   // Ошибки:
   //   INVALID_ARGUMENT    — working_directory не существует или графы пусты
@@ -74,28 +75,30 @@ message CollectDependenciesResponse {
   repeated DependencyGraph graphs = 1;
 }
 
-// ── RebuildWithDesignations ──────────────────────────────────────────────────
+// ── RebuildWithProperties ────────────────────────────────────────────────────
 
-// TODO: адаптировать под новый DependencyGraph.
-// designation переехал — нужно определить: per-file или per-config?
-// Пока оркестратор передаёт графы как есть из CollectDependencies.
-message RebuildWithDesignationsRequest {
+message RebuildWithPropertiesRequest {
   // Каталог, в котором размещены все файлы (flat-copy буфер).
   string working_directory = 1;
 
   // Графы из CollectDependencies, дополненные оркестратором.
+  // Свойства для записи задаются через FileNode.write_properties и ConfigNode.write_properties.
+  // write_properties — sparse map: указываются только поля для создания или перезаписи.
   repeated DependencyGraph graphs = 2;
 }
 
-// Результаты по каждому файлу в порядке обхода графа (leaves → root).
-message RebuildWithDesignationsResponse {
+message RebuildWithPropertiesResponse {
+  // Результаты по каждому файлу в порядке обхода графа (leaves → root).
   repeated FileResult results = 1;
+
+  // Те же графы что в запросе, но с обновлёнными properties после записи и rebuild.
+  // properties перечитываются из SW в рамках того же открытого документа (без дополнительных
+  // открытий файлов). write_properties в response не заполняются (только для чтения).
+  repeated DependencyGraph graphs = 2;
 }
 
 // ── RebuildFiles ─────────────────────────────────────────────────────────────
 
-// TODO: адаптировать под новый DependencyGraph.
-// Порядок пересборки теперь определяется конфигурационным DAG (leaves → root).
 message RebuildFilesRequest {
   // Каталог, в котором размещены все файлы (flat-copy буфер).
   string working_directory = 1;
@@ -163,8 +166,8 @@ message CancelResponse {
 // ── OperationType ─────────────────────────────────────────────────────────────
 
 enum OperationType {
-  OPERATION_TYPE_UNSPECIFIED               = 0;
-  OPERATION_TYPE_COLLECT_DEPENDENCIES      = 1;
-  OPERATION_TYPE_REBUILD_WITH_DESIGNATIONS = 2;
-  OPERATION_TYPE_REBUILD_FILES             = 3;
+  OPERATION_TYPE_UNSPECIFIED              = 0;
+  OPERATION_TYPE_COLLECT_DEPENDENCIES     = 1;
+  OPERATION_TYPE_REBUILD_WITH_PROPERTIES  = 2;
+  OPERATION_TYPE_REBUILD_FILES            = 3;
 }
