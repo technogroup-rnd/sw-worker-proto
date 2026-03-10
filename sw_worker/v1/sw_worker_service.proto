@@ -73,6 +73,12 @@ message RebuildWithPropertiesRequest {
   // Свойства для записи задаются через FileNode.write_properties и ConfigNode.write_properties.
   // write_properties — sparse map: указываются только поля для создания или перезаписи.
   repeated DependencyGraph graphs = 2;
+
+  // Режим обработки нефатальных ошибок (DXF export fail, broken view refs и т.д.).
+  // false (default): первая нефатальная ошибка → abort операции.
+  // true: ошибки собираются как warnings в FileResult.error_message, обработка продолжается.
+  // Сценарий: strict → error → переотправка best_efforts → collect ALL errors по DAG скопом.
+  bool best_efforts = 3;
 }
 
 message RebuildWithPropertiesResponse {

@@ -17,7 +17,7 @@ enum FileType {
 //   nodes       — конфигурационный уровень (DAG: parent-config → child-config с count)
 //
 // Конфигурационный граф — DAG с orphan nodes:
-//   - Множество корней (все конфигурации корневого файла, кроме FlatPattern)
+//   - Множество корней (все конфигурации корневого файла, кроме SM-FLAT-PATTERN)
 //   - Shared nodes (одна конфигурация детали используется несколькими parent)
 //   - Orphan configs (конфигурация существует, но не используется ни одним parent)
 
@@ -26,7 +26,7 @@ message DependencyGraph {
   // Конфигурационные узлы DAG.
   // Ключ — "filename:config" (например, "assembly.sldasm:Default").
   // Содержит узлы для всех конфигураций всех файлов, включая orphan.
-  // FlatPattern конфигурации исключены.
+  // SM-FLAT-PATTERN конфигурации исключены.
   map<string, ConfigNode> nodes = 1;
 
   // ID корневых конфигурационных узлов (ключи в nodes).
@@ -57,8 +57,9 @@ message FileNode {
   // Используется только для чтения; не записывается в SW операцией RebuildWithProperties.
   map<string, string> properties = 3;
 
-  // Содержит ли файл конфигурацию FlatPattern → сигнал для генерации DXF-развёрток.
-  bool has_flat_pattern = 4;
+  // Является ли файл листовой деталью (sheet metal).
+  // Определяется через SW API (GetBendState != swSMBendStateNone) на Collect фазе.
+  bool is_sheet_metal = 4;
 
   // Сопутствующие файлы уровня файла (чертежи, DXF, PDF и т.д.),
   // найденные по конвенции именования. Только имена файлов без пути.
