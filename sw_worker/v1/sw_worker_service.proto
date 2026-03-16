@@ -10,10 +10,10 @@ import "sw_worker/v1/common.proto";
 // нужных файлов (все файлы в одном каталоге, уникальные имена — ответственность оркестратора).
 service SwWorkerService {
 
-  // Построить графы зависимостей для файлов по указанному пути.
-  // path может быть путём к файлу (один граф) или путём к каталогу (все SW-файлы в каталоге).
-  // Возвращает по одному графу на каждый обнаруженный корень. Деталь без ссылок даёт
-  // граф из одного узла. Файлы не открывает — использует GetDocumentDependencies2.
+  // Построить граф зависимостей для файлов по указанному пути.
+  // path может быть путём к файлу или к каталогу (все SW-файлы в каталоге).
+  // Возвращает один merged граф (при directory scan — все корни объединены).
+  // Деталь без ссылок даёт граф из одного узла.
   //
   // Ошибки:
   //   INVALID_ARGUMENT  — path не существует или не является SW-файлом / каталогом
@@ -21,16 +21,16 @@ service SwWorkerService {
   //   INTERNAL          — непредвиденный сбой SW
   rpc CollectDependencies(CollectDependenciesRequest) returns (CollectDependenciesResponse);
 
-  // Записать пользовательские свойства в файлы (FileNode.write_properties,
+  // Записать пользовательские свойства в файлы (ItemNode.write_properties,
   // ConfigNode.write_properties), затем принудительно пересобрать и сохранить все файлы.
+  // STANDARD_* и BOM_MATERIAL элементы пропускаются (read-only / виртуальные).
   // Файлы без write_properties пересобираются, но их свойства не изменяются.
-  // Сервис определяет порядок пересборки по графу (leaves → root:
+  // Сервис определяет порядок пересборки по графу (leaves → roots:
   // сначала детали, затем сборки, чертежи последними).
   // После записи и rebuild свойства перечитываются и возвращаются в response.
-  // При ошибке на отдельном файле продолжает работу; results содержат успех/ошибку по каждому файлу.
   //
   // Ошибки:
-  //   INVALID_ARGUMENT    — working_directory не существует или графы пусты
+  //   INVALID_ARGUMENT    — working_directory не существует или граф пуст
   //   UNAVAILABLE         — процесс SolidWorks не готов
   //   RESOURCE_EXHAUSTED  — очередь запросов переполнена
   //   INTERNAL            — непредвиденный сбой SW
@@ -53,14 +53,15 @@ service SwWorkerService {
 // ── CollectDependencies ──────────────────────────────────────────────────────
 
 message CollectDependenciesRequest {
-  // Путь к SW-файлу (один граф) или к каталогу (по одному графу на каждый обнаруженный корень).
+  // Путь к SW-файлу (один граф) или к каталогу (все SW-файлы сканируются, результаты сливаются).
   string path = 1;
 }
 
 message CollectDependenciesResponse {
-  // Графы зависимостей, по одному на каждый обнаруженный корневой файл.
-  // Каждый граф содержит файловый и конфигурационный уровни, а также missing/errors.
-  repeated DependencyGraph graphs = 1;
+  // Merged граф зависимостей. При directory scan — все корни объединены в один граф
+  // (disconnected components допустимы). Содержит уровни элементов и конфигураций,
+  // а также missing/errors.
+  DependencyGraph graph = 1;
 }
 
 // ── RebuildWithProperties ────────────────────────────────────────────────────
@@ -69,30 +70,30 @@ message RebuildWithPropertiesRequest {
   // Каталог, в котором размещены все файлы (flat-copy буфер).
   string working_directory = 1;
 
-  // Графы из CollectDependencies, дополненные оркестратором.
-  // Свойства для записи задаются через FileNode.write_properties и ConfigNode.write_properties.
+  // Граф из CollectDependencies, дополненный оркестратором.
+  // Свойства для записи задаются через ItemNode.write_properties и ConfigNode.write_properties.
   // write_properties — sparse map: указываются только поля для создания или перезаписи.
-  repeated DependencyGraph graphs = 2;
+  DependencyGraph graph = 2;
 
   // Режим обработки ошибок.
   // false (default, strict): первая ошибка → abort, оставшиеся файлы не обрабатываются.
-  //   Core errors (open/save/property write) → FileResult.success=false.
-  //   Non-fatal issues (DXF export, broken view refs) → тоже FileResult.success=false.
+  //   Core errors (open/save/property write) → ItemResult.success=false.
+  //   Non-fatal issues (DXF export, broken view refs) → тоже ItemResult.success=false.
   // true (lenient): обработка продолжается по всему DAG.
-  //   Core errors → FileResult.success=false, обработка продолжается.
-  //   Non-fatal issues → FileResult.success=true, описание в error_message (warning).
+  //   Core errors → ItemResult.success=false, обработка продолжается.
+  //   Non-fatal issues → ItemResult.success=true, описание в error_message (warning).
   // Сценарий: strict → error → переотправка best_efforts → collect ALL errors по DAG скопом.
   bool best_efforts = 3;
 }
 
 message RebuildWithPropertiesResponse {
-  // Результаты по каждому файлу в порядке обхода графа (leaves → root).
-  repeated FileResult results = 1;
+  // Результаты по каждому элементу в порядке обхода графа (leaves → roots).
+  repeated ItemResult results = 1;
 
-  // Те же графы что в запросе, но с обновлёнными properties после записи и rebuild.
+  // Тот же граф что в запросе, но с обновлёнными properties после записи и rebuild.
   // properties перечитываются из SW в рамках того же открытого документа (без дополнительных
   // открытий файлов). write_properties в response не заполняются (только для чтения).
-  repeated DependencyGraph graphs = 2;
+  DependencyGraph graph = 2;
 }
 
 // ── GetStatus ────────────────────────────────────────────────────────────────

@@ -2,54 +2,72 @@ syntax = "proto3";
 
 package sw_worker.v1;
 
-// Тип файла документа SolidWorks.
-enum FileType {
-  FILE_TYPE_UNSPECIFIED = 0;
-  FILE_TYPE_PART        = 1; // .sldprt
-  FILE_TYPE_ASSEMBLY    = 2; // .sldasm
-  FILE_TYPE_DRAWING     = 3; // .slddrw
-}
-
 // ── DAG зависимостей ─────────────────────────────────────────────────────────
 //
 // Два уровня представления:
-//   files       — файловый уровень (общие свойства файла, тип, companion-файлы)
+//   items       — уровень элементов (общие свойства, тип, sheet metal flag)
 //   nodes       — конфигурационный уровень (DAG: parent-config → child-config с count)
 //
-// Конфигурационный граф — DAG с orphan nodes:
-//   - Множество корней (все конфигурации корневого файла, кроме SM-FLAT-PATTERN)
+// Конфигурационный граф — DAG:
+//   - Roots = all_nodes − {edge.child_node_id for edge in edges}
+//     (ноды без входящих рёбер; orphaned файлы — тоже roots с вырожденным графом)
 //   - Shared nodes (одна конфигурация детали используется несколькими parent)
-//   - Orphan configs (конфигурация существует, но не используется ни одним parent)
+//   - SM-FLAT-PATTERN конфигурации исключены из nodes
 
 // Граф зависимостей.
+// При directory scan — один merged граф со всеми корнями (disconnected components допустимы).
 message DependencyGraph {
   // Конфигурационные узлы DAG.
-  // Ключ — "filename:config" (например, "assembly.sldasm:Default").
-  // Содержит узлы для всех конфигураций всех файлов, включая orphan.
+  // Ключ — "item_name:config" (например, "assembly.sldasm:Default").
+  // Содержит узлы для всех конфигураций всех элементов, включая orphan.
   // SM-FLAT-PATTERN конфигурации исключены.
   map<string, ConfigNode> nodes = 1;
 
   // ID корневых конфигурационных узлов (ключи в nodes).
+  // Derived property: roots = all_nodes − {edge.child_node_id for edge in edges}.
+  // Заполняется SW-worker после merge, не задаётся вручную.
   repeated string roots = 2;
 
-  // Файловые данные. Ключ — имя файла (например, "assembly.sldasm").
-  // Свойства уровня файла, общие для всех конфигураций.
-  map<string, FileNode> files = 3;
+  // Данные уровня элементов. Ключ — имя элемента (например, "assembly.sldasm", "Сталь 08Х18Н10").
+  // Свойства уровня элемента, общие для всех конфигураций.
+  map<string, ItemNode> items = 3;
 
   // Имена файлов, на которые есть ссылки, но которые не найдены в буфере.
   repeated string missing = 4;
 
-  // Файлы, которые не удалось прочитать (повреждённые, заблокированные).
-  repeated FileError errors = 5;
+  // Элементы, которые не удалось прочитать (повреждённые, заблокированные).
+  repeated ItemResult errors = 5;
+
+  // Рёбра конфигурационного DAG: parent → child с количеством экземпляров.
+  repeated Edge edges = 6;
+
+  // Сопутствующие файлы (не-SW артефакты: DXF, PDF и т.п.),
+  // привязанные к конфигурационным узлам (node_id).
+  // File-level companions (без [configName]) ассоциируются
+  // со ВСЕМИ конфигурациями файла.
+  // Чертежи (.slddrw) — ноды графа, не companions.
+  map<string, CompanionFileList> companions = 7;
 }
 
-// Файловый узел — общие данные файла, не зависящие от конфигурации.
-message FileNode {
-  // Имя файла без пути к каталогу (например, "assembly.sldasm").
-  string file_name = 1;
+// Узел уровня элемента — общие данные, не зависящие от конфигурации.
+message ItemNode {
+  // Тип элемента.
+  enum ItemType {
+    UNSPECIFIED         = 0;
+    PART                = 1; // .sldprt
+    STANDARD_PART       = 2; // .sldprt из SW Library (read-only, не открывается)
+    ASSEMBLY            = 3; // .sldasm
+    STANDARD_ASSEMBLY   = 4; // .sldasm из SW Library (read-only, не открывается)
+    DRAWING             = 5; // .slddrw
+    STANDARD_DRAWING    = 6; // .slddrw из SW Library (read-only, не открывается)
+    BOM_MATERIAL        = 7; // PDM-объект без файла (добавляется оркестратором)
+  }
 
-  // Тип документа SolidWorks.
-  FileType file_type = 2;
+  // Имя элемента (для CAD — имя файла без пути, для BOM_MATERIAL — идентификатор).
+  string item_name = 1;
+
+  // Тип элемента.
+  ItemType item_type = 2;
 
   // Custom properties уровня файла (CustomPropertyManager("")).
   // Ключ — имя свойства, значение — resolved (вычисленное).
@@ -61,11 +79,8 @@ message FileNode {
   // Определяется через SW API (GetBendState != swSMBendStateNone) на Collect фазе.
   bool is_sheet_metal = 4;
 
-  // Сопутствующие файлы уровня файла (чертежи, DXF, PDF и т.д.),
-  // найденные по конвенции именования. Только имена файлов без пути.
-  // Относятся ко всем конфигурациям файла.
-  // Исключены: .sldprt, .sldasm (уже в графе зависимостей).
-  repeated string companion_files = 5;
+  // field 5 removed (companion_files → DependencyGraph.companions)
+  reserved 5;
 
   // Sparse map свойств уровня файла для записи в SW (CustomPropertyManager("")).
   // Используется только в RebuildWithProperties.
@@ -80,22 +95,34 @@ message FileNode {
   //     Text:          значение передаётся в SW без изменений.
   //   - Новое свойство (не существует в файле): всегда создаётся как Text.
   map<string, string> write_properties = 6;
+
+  // Summary Information (стандартные OLE document properties).
+  // Доступны через IModelDoc2.SummaryInfo — не Custom Properties, отдельный механизм.
+  // Ключ — имя поля, значение — строка. Фиксированный набор допустимых ключей:
+  //   "Title", "Subject", "Author", "Keywords", "Comment" (R/W),
+  //   "SavedBy", "CreateDate", "SaveDate" (R/O).
+  // CollectDependencies: фильтруются по PropertyFilter.SummaryProperties из конфигурации сервиса.
+  // RebuildWithProperties: после write+save возвращаются все непустые поля (без фильтрации).
+  // Используется только для чтения; запись — через write_summary_properties.
+  map<string, string> summary_properties = 7;
+
+  // Sparse map Summary Information для записи в SW (IModelDoc2.SummaryInfo).
+  // Используется только в RebuildWithProperties.
+  // Допустимы только записываемые поля: "Title", "Subject", "Author", "Keywords", "Comment".
+  // Поля "SavedBy", "CreateDate", "SaveDate" — read-only, при записи игнорируются.
+  map<string, string> write_summary_properties = 8;
 }
 
-// Конфигурационный узел DAG — одна конфигурация одного файла.
+// Конфигурационный узел DAG — одна конфигурация одного элемента.
 message ConfigNode {
-  // Имя файла без пути к каталогу.
-  string file_name = 1;
+  // Имя элемента (для CAD — имя файла без пути).
+  string item_name = 1;
 
-  // Имя конфигурации SolidWorks.
+  // Имя конфигурации SolidWorks. Пустая строка для BOM_MATERIAL.
   string config_name = 2;
 
-  // Дочерние компоненты (только активные, не suppressed в данной конфигурации).
-  repeated ChildRef children = 3;
-
-  // True, если конфигурация не используется ни одной родительской
-  // конфигурацией в графе.
-  bool is_orphan = 4;
+  // fields 3, 4, 6 removed (children → edges, is_orphan → derived, companion_files → companions)
+  reserved 3, 4, 6;
 
   // Custom properties уровня конфигурации (CustomPropertyManager(config_name)).
   // Ключ — имя свойства, значение — resolved (вычисленное).
@@ -103,44 +130,41 @@ message ConfigNode {
   // Используется только для чтения; не записывается в SW операцией RebuildWithProperties.
   map<string, string> properties = 5;
 
-  // Сопутствующие файлы, специфичные для данной конфигурации.
-  // Определяются по наличию [config_name] в имени файла.
-  // Только имена файлов без пути.
-  repeated string companion_files = 6;
-
   // Sparse map свойств уровня конфигурации для записи в SW (CustomPropertyManager(config_name)).
   // Используется только в RebuildWithProperties.
   // Оркестратор указывает только те свойства, которые нужно создать или перезаписать.
-  // Правила нормализации типов — аналогично FileNode.write_properties.
+  // Правила нормализации типов — аналогично ItemNode.write_properties.
   map<string, string> write_properties = 7;
 }
 
-// Ребро конфигурационного DAG: ссылка на дочерний компонент с количеством экземпляров.
-message ChildRef {
-  // ID дочернего узла в формате "filename:config" (ключ в nodes).
-  string node_id = 1;
+// Ребро конфигурационного DAG: parent → child с количеством экземпляров.
+message Edge {
+  // ID родительского узла в формате "item_name:config" (ключ в nodes).
+  string parent_node_id = 1;
+
+  // ID дочернего узла в формате "item_name:config" (ключ в nodes).
+  string child_node_id = 2;
 
   // Количество экземпляров компонента в родительской конфигурации.
-  uint32 count = 2;
+  uint32 count = 3;
 }
 
-// Результат операции для отдельного файла (RebuildFiles, RebuildWithProperties).
-message FileResult {
-  // Имя файла без пути к каталогу.
-  string file_name     = 1;
+// Список сопутствующих файлов для одного конфигурационного узла.
+// Только не-SW артефакты (DXF, PDF и т.п.). Чертежи — ноды графа.
+message CompanionFileList {
+  // Имена файлов без пути (например, "plate [Default].dxf").
+  repeated string file_names = 1;
+}
 
-  // True, если операция над данным файлом завершилась успешно.
+// Результат операции для отдельного элемента.
+// Используется в DependencyGraph.errors (Collect) и RebuildWithPropertiesResponse.results (Rebuild).
+message ItemResult {
+  // Имя элемента (для CAD — имя файла без пути).
+  string item_name     = 1;
+
+  // True, если операция над данным элементом завершилась успешно.
   bool   success       = 2;
 
   // Описание ошибки; пустая строка, если success равно true.
   string error_message = 3;
-}
-
-// Файл, который не удалось прочитать в ходе CollectDependencies.
-message FileError {
-  // Имя файла без пути к каталогу.
-  string file_name     = 1;
-
-  // Описание ошибки.
-  string error_message = 2;
 }
