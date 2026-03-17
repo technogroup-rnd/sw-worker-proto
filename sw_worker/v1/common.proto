@@ -156,15 +156,28 @@ message CompanionFileList {
   repeated string file_names = 1;
 }
 
+// Статус обработки отдельного элемента.
+enum ItemResultStatus {
+  ITEM_RESULT_STATUS_UNSPECIFIED = 0; // Не задан — трактуется как ERROR.
+  ITEM_RESULT_STATUS_SUCCESS     = 1; // Элемент обработан успешно.
+  ITEM_RESULT_STATUS_WARNING     = 2; // Элемент обработан, но есть оговорки (напр. DXF не создан).
+  ITEM_RESULT_STATUS_ERROR       = 3; // Элемент не обработан или данные некорректны.
+  ITEM_RESULT_STATUS_SKIPPED     = 4; // Элемент сознательно пропущен (напр. стандартное изделие).
+}
+
 // Результат операции для отдельного элемента.
 // Используется в DependencyGraph.errors (Collect) и RebuildWithPropertiesResponse.results (Rebuild).
 message ItemResult {
   // Имя элемента (для CAD — имя файла без пути).
-  string item_name     = 1;
+  string item_name           = 1;
 
-  // True, если операция над данным элементом завершилась успешно.
-  bool   success       = 2;
+  // Статус обработки элемента (заменяет устаревшее поле success).
+  ItemResultStatus status    = 4;
 
-  // Описание ошибки; пустая строка, если success равно true.
-  string error_message = 3;
+  // Описание проблемы; пустая строка при status = SUCCESS.
+  string error_message       = 3;
+
+  // Поле 2 зарезервировано (ранее bool success).
+  reserved 2;
+  reserved "success";
 }
