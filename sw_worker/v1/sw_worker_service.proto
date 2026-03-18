@@ -75,15 +75,8 @@ message RebuildWithPropertiesRequest {
   // write_properties — sparse map: указываются только поля для создания или перезаписи.
   DependencyGraph graph = 2;
 
-  // Режим обработки ошибок.
-  // false (default, strict): первая ошибка → abort, оставшиеся файлы не обрабатываются.
-  //   Core errors (open/save/property write) → ItemResult.success=false.
-  //   Non-fatal issues (DXF export, broken view refs) → тоже ItemResult.success=false.
-  // true (lenient): обработка продолжается по всему DAG.
-  //   Core errors → ItemResult.success=false, обработка продолжается.
-  //   Non-fatal issues → ItemResult.success=true, описание в error_message (warning).
-  // Сценарий: strict → error → переотправка best_efforts → collect ALL errors по DAG скопом.
-  bool best_efforts = 3;
+  reserved 3;
+  reserved "best_efforts";
 }
 
 message RebuildWithPropertiesResponse {
@@ -101,25 +94,29 @@ message RebuildWithPropertiesResponse {
 message GetStatusRequest {}
 
 // Описывает отдельную операцию — активную или в очереди.
-// Для операций в очереди (ещё не запущенных): files_total/files_done/elapsed_seconds = 0,
-// eta_seconds = -1.
+// Для операций в очереди (ещё не запущенных): все счётчики = 0, eta = -1.
+// items_total может расти по ходу операции (новые фазы добавляют items).
 message OperationInfo {
-  string        id              = 1; // UUID, назначаемый сервером; стабилен в течение всей жизни операции
-  OperationType type            = 2;
-  string        path            = 3; // путь (CollectDependencies) или working_directory
-  int32         files_total     = 4;
-  int32         files_done      = 5;
-  int64         elapsed_seconds = 6;
-  int64         eta_seconds     = 7; // -1 = неизвестно
+  string        id                = 1; // UUID, назначаемый сервером; стабилен в течение всей жизни операции
+  OperationType type              = 2;
+  string        path              = 3; // путь (CollectDependencies) или working_directory
+  int32         items_total       = 4; // суммарно по всем фазам; может расти (dynamic total)
+  int32         items_done        = 5; // суммарно по всем фазам; монотонно растёт
+  int64         elapsed_seconds   = 6;
+  int64         eta_seconds       = 7; // оставшееся время по ВСЕЙ операции (все фазы), -1 = неизвестно
+  int32         phase_current     = 8; // текущая фаза, 1-based (0 = ещё не запущена)
+  int32         phase_count       = 9; // общее кол-во фаз в операции
+  string        phase_name        = 10; // человекочитаемое: "scanning", "traversing assemblies"
+  int64         phase_eta_seconds = 11; // оставшееся время текущей фазы, -1 = неизвестно
 }
 
 // Текущее состояние здоровья сервиса, состояние очереди и оценки ETA.
 message GetStatusResponse {
   // Здоровье
-  bool  is_healthy = 1; // sw_running && !tainted
-  bool  sw_running = 2;
-  bool  tainted    = 3;
-  int64 memory_mb  = 4;
+  bool  is_healthy = 1; // агрегат: sw_running && !tainted; false = сервис не может принимать работу
+  bool  sw_running = 2; // процесс SolidWorks запущен и отвечает на COM-вызовы
+  bool  tainted    = 3; // SW в нестабильном состоянии (COM-crash, утечка); требуется перезапуск
+  int64 memory_mb  = 4; // рабочий набор процесса SW в МБ; для мониторинга утечек памяти
 
   // Ёмкость
   int32 queue_limit = 5; // максимальная принимаемая глубина очереди
