@@ -122,11 +122,21 @@ message PhaseProgress {
 
 // Текущее состояние здоровья сервиса, состояние очереди и оценки ETA.
 message GetStatusResponse {
+  // Уровень давления на ресурсы (GDI, USER, RAM). Worst-case по всем ресурсам.
+  // Caller использует для проактивного решения о рестарте SW между файлами.
+  enum ResourcePressure {
+    LOW       = 0; // < 50% любого порога
+    MODERATE  = 1; // >= 50% какого-то порога
+    ELEVATED  = 2; // >= 67% какого-то порога
+    HIGH      = 3; // >= 75% какого-то порога — рекомендуется завершить и рестартнуть
+    CRITICAL  = 4; // >= 100% какого-то порога — NeedsRestart() вернёт true
+  }
+
   // Здоровье
   bool  is_healthy = 1; // агрегат: sw_running && !degraded; false = сервис не может принимать работу
-  bool  sw_running = 2; // процесс SolidWorks запущен и отвечает на COM-вызовы
+  bool  sw_running = 2; // процесс SоlidWorks запущен и отвечает на COM-вызовы
   bool  degraded   = 3; // SW в нестабильном состоянии (COM-crash, утечка); требуется перезапуск
-  int64 memory_mb  = 4; // рабочий набор процесса SW в МБ; для мониторинга утечек памяти
+  int64 memory_mb  = 4; // рабочий набор процесса SW в МБ (legacy, см. free_system_memory_mb)
 
   // Ёмкость
   int32 queue_limit = 5; // максимальная принимаемая глубина очереди
@@ -134,6 +144,13 @@ message GetStatusResponse {
   // operations[0] = активная операция (если есть), operations[1..] = очередь по порядку.
   // Пусто, если сервис простаивает. queue_depth = operations.size().
   repeated OperationInfo operations = 6;
+
+  // Ресурсы SW-процесса (GDI/USER/RAM)
+  uint32 gdi_objects           = 7;  // текущее кол-во GDI объектов SW-процесса
+  uint32 user_objects          = 8;  // текущее кол-во USER объектов SW-процесса
+  uint32 gdi_peak              = 9;  // пиковое значение GDI с момента запуска SW
+  int64  free_system_memory_mb = 10; // свободная физическая RAM в системе (MB)
+  ResourcePressure resource_pressure = 11; // worst-case давление по всем ресурсам
 }
 
 // ── Cancel ───────────────────────────────────────────────────────────────────
