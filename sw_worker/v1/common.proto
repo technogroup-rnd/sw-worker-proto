@@ -79,9 +79,6 @@ message ItemNode {
   // Определяется через SW API (GetBendState != swSMBendStateNone) на Collect фазе.
   bool is_sheet_metal = 4;
 
-  // field 5 removed (companion_files → DependencyGraph.companions)
-  reserved 5;
-
   // Sparse map свойств уровня файла для записи в SW (CustomPropertyManager("")).
   // Используется только в RebuildWithProperties.
   // Оркестратор указывает только те свойства, которые нужно создать или перезаписать.
@@ -94,7 +91,7 @@ message ItemNode {
   //     Date:          значение передаётся в SW без изменений (формат "DD.MM.YYYY").
   //     Text:          значение передаётся в SW без изменений.
   //   - Новое свойство (не существует в файле): всегда создаётся как Text.
-  map<string, string> write_properties = 6;
+  map<string, string> write_properties = 5;
 
   // Summary Information (стандартные OLE document properties).
   // Доступны через IModelDoc2.SummaryInfo — не Custom Properties, отдельный механизм.
@@ -104,13 +101,13 @@ message ItemNode {
   // CollectDependencies: фильтруются по PropertyFilter.SummaryProperties из конфигурации сервиса.
   // RebuildWithProperties: после write+save возвращаются все непустые поля (без фильтрации).
   // Используется только для чтения; запись — через write_summary_properties.
-  map<string, string> summary_properties = 7;
+  map<string, string> summary_properties = 6;
 
   // Sparse map Summary Information для записи в SW (IModelDoc2.SummaryInfo).
   // Используется только в RebuildWithProperties.
   // Допустимы только записываемые поля: "Title", "Subject", "Author", "Keywords", "Comment".
   // Поля "SavedBy", "CreateDate", "SaveDate" — read-only, при записи игнорируются.
-  map<string, string> write_summary_properties = 8;
+  map<string, string> write_summary_properties = 7;
 }
 
 // Конфигурационный узел DAG — одна конфигурация одного элемента.
@@ -121,20 +118,17 @@ message ConfigNode {
   // Имя конфигурации SolidWorks. Пустая строка для BOM_MATERIAL.
   string config_name = 2;
 
-  // fields 3, 4, 6 removed (children → edges, is_orphan → derived, companion_files → companions)
-  reserved 3, 4, 6;
-
   // Custom properties уровня конфигурации (CustomPropertyManager(config_name)).
   // Ключ — имя свойства, значение — resolved (вычисленное).
   // Фильтруются по PropertyFilter.ConfigProperties из конфигурации сервиса.
   // Используется только для чтения; не записывается в SW операцией RebuildWithProperties.
-  map<string, string> properties = 5;
+  map<string, string> properties = 3;
 
   // Sparse map свойств уровня конфигурации для записи в SW (CustomPropertyManager(config_name)).
   // Используется только в RebuildWithProperties.
   // Оркестратор указывает только те свойства, которые нужно создать или перезаписать.
   // Правила нормализации типов — аналогично ItemNode.write_properties.
-  map<string, string> write_properties = 7;
+  map<string, string> write_properties = 4;
 }
 
 // Ребро конфигурационного DAG: parent → child с количеством экземпляров.
@@ -160,7 +154,7 @@ message CompanionFileList {
 enum ItemResultStatus {
   ITEM_RESULT_STATUS_UNSPECIFIED = 0; // Не задан — трактуется как ERROR.
   ITEM_RESULT_STATUS_SUCCESS     = 1; // Элемент обработан успешно.
-  ITEM_RESULT_STATUS_WARNING     = 2; // Элемент обработан, но есть оговорки (напр. DXF не создан).
+  ITEM_RESULT_STATUS_WARNING     = 2; // Элемент обработан, но есть оговорки (Collect: unresolved ref).
   ITEM_RESULT_STATUS_ERROR       = 3; // Элемент не обработан или данные некорректны.
   ITEM_RESULT_STATUS_SKIPPED     = 4; // Элемент сознательно пропущен (напр. стандартное изделие).
 }
@@ -169,15 +163,11 @@ enum ItemResultStatus {
 // Используется в DependencyGraph.errors (Collect) и RebuildWithPropertiesResponse.results (Rebuild).
 message ItemResult {
   // Имя элемента (для CAD — имя файла без пути).
-  string item_name           = 1;
+  string item_name        = 1;
 
-  // Статус обработки элемента (заменяет устаревшее поле success).
-  ItemResultStatus status    = 4;
+  // Статус обработки элемента.
+  ItemResultStatus status = 2;
 
   // Описание проблемы; пустая строка при status = SUCCESS.
-  string error_message       = 3;
-
-  // Поле 2 зарезервировано (ранее bool success).
-  reserved 2;
-  reserved "success";
+  string error_message    = 3;
 }

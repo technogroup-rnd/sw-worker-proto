@@ -74,9 +74,6 @@ message RebuildWithPropertiesRequest {
   // Свойства для записи задаются через ItemNode.write_properties и ConfigNode.write_properties.
   // write_properties — sparse map: указываются только поля для создания или перезаписи.
   DependencyGraph graph = 2;
-
-  reserved 3;
-  reserved "best_efforts";
 }
 
 message RebuildWithPropertiesResponse {
