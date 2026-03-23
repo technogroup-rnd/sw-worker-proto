@@ -5,7 +5,8 @@ package sw_worker.v1;
 import "sw_worker/v1/common.proto";
 
 // gRPC-сервис для обработки CAD-файлов SolidWorks.
-// Все операции унарные и атомарные. Запросы сериализуются внутри сервиса.
+// Все операции унарные и атомарные. Сервис принимает одну операцию за раз —
+// при занятом буфере возвращает RESOURCE_EXHAUSTED.
 // Каждый запрос требует изолированного working_directory с flat-copy всех
 // нужных файлов (все файлы в одном каталоге, уникальные имена — ответственность оркестратора).
 service SwWorkerService {
@@ -16,9 +17,10 @@ service SwWorkerService {
   // Деталь без ссылок даёт граф из одного узла.
   //
   // Ошибки:
-  //   INVALID_ARGUMENT  — path не существует или не является SW-файлом / каталогом
-  //   UNAVAILABLE       — процесс SolidWorks не готов
-  //   INTERNAL          — непредвиденный сбой SW
+  //   INVALID_ARGUMENT    — path не существует или не является SW-файлом / каталогом
+  //   RESOURCE_EXHAUSTED  — буфер занят (выполняется другая операция)
+  //   UNAVAILABLE         — процесс SolidWorks не готов
+  //   INTERNAL            — непредвиденный сбой SW
   rpc CollectDependencies(CollectDependenciesRequest) returns (CollectDependenciesResponse);
 
   // Записать пользовательские свойства в файлы (ItemNode.write_properties,
@@ -31,22 +33,22 @@ service SwWorkerService {
   //
   // Ошибки:
   //   INVALID_ARGUMENT    — working_directory не существует или граф пуст
+  //   RESOURCE_EXHAUSTED  — буфер занят (выполняется другая операция)
   //   UNAVAILABLE         — процесс SolidWorks не готов
-  //   RESOURCE_EXHAUSTED  — очередь запросов переполнена
   //   INTERNAL            — непредвиденный сбой SW
   rpc RebuildWithProperties(RebuildWithPropertiesRequest) returns (RebuildWithPropertiesResponse);
 
-  // Вернуть текущее состояние здоровья сервиса, состояние очереди и оценки ETA.
-  // Не ставится в очередь — возвращает результат немедленно, не ожидая SW-сессии.
+  // Вернуть текущее состояние здоровья сервиса и текущей операции.
+  // Не ставится в буфер — возвращает результат немедленно, не ожидая SW-сессии.
   rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
 
-  // Отменить конкретные операции по ID (из GetStatus → operations[*].id).
-  // operation_ids не должен быть пустым — иначе возвращается INVALID_ARGUMENT.
+  // Отменить операцию по ID (из GetStatus → current_operation.id).
+  // operation_id не должен быть пустым — иначе возвращается INVALID_ARGUMENT.
   // Активная операция останавливается на ближайшей безопасной границе файла (не посередине файла).
-  // Опрашивать GetStatus, пока operations не станет пустым, прежде чем освобождать хранилище.
+  // Опрашивать GetStatus, пока current_operation не станет пустым, прежде чем освобождать хранилище.
   //
   // Ошибки:
-  //   INVALID_ARGUMENT  — operation_ids пуст
+  //   INVALID_ARGUMENT  — operation_id пуст
   rpc Cancel(CancelRequest) returns (CancelResponse);
 }
 
@@ -90,14 +92,14 @@ message RebuildWithPropertiesResponse {
 
 message GetStatusRequest {}
 
-// Описывает отдельную операцию — активную или в очереди.
+// Описывает текущую операцию.
 message OperationInfo {
   string          id     = 1; // UUID, назначаемый сервером; стабилен в течение всей жизни операции
   OperationType   type   = 2;
   string          path   = 3; // путь (CollectDependencies) или working_directory
   OperationStatus status = 4;
 
-  // Прогресс операции. Отсутствует для pending-операций (ещё не запущенных).
+  // Прогресс операции. Отсутствует в короткое окно между приёмом и началом исполнения.
   OperationProgress progress = 5;
 }
 
@@ -120,7 +122,7 @@ message PhaseProgress {
   int64  eta_seconds = 5; // оставшееся время этой фазы, -1 = неизвестно
 }
 
-// Текущее состояние здоровья сервиса, состояние очереди и оценки ETA.
+// Текущее состояние здоровья сервиса и текущей операции.
 message GetStatusResponse {
   // Уровень давления на ресурсы (GDI, USER, RAM). Worst-case по всем ресурсам.
   // Caller использует для проактивного решения о рестарте SW между файлами.
@@ -138,34 +140,29 @@ message GetStatusResponse {
   bool  degraded   = 3; // SW в нестабильном состоянии (COM-crash, утечка); требуется перезапуск
   int64 memory_mb  = 4; // рабочий набор процесса SW в МБ (legacy, см. free_system_memory_mb)
 
-  // Ёмкость
-  int32 queue_limit = 5; // максимальная принимаемая глубина очереди
-
-  // operations[0] = активная операция (если есть), operations[1..] = очередь по порядку.
-  // Пусто, если сервис простаивает. queue_depth = operations.size().
-  repeated OperationInfo operations = 6;
+  // Текущая операция. Отсутствует, если сервис простаивает.
+  OperationInfo current_operation = 5;
 
   // Ресурсы SW-процесса (GDI/USER/RAM)
-  uint32 gdi_objects           = 7;  // текущее кол-во GDI объектов SW-процесса
-  uint32 user_objects          = 8;  // текущее кол-во USER объектов SW-процесса
-  uint32 gdi_peak              = 9;  // пиковое значение GDI с момента запуска SW
-  int64  free_system_memory_mb = 10; // свободная физическая RAM в системе (MB)
-  ResourcePressure resource_pressure = 11; // worst-case давление по всем ресурсам
+  uint32 gdi_objects           = 6;  // текущее кол-во GDI объектов SW-процесса
+  uint32 user_objects          = 7;  // текущее кол-во USER объектов SW-процесса
+  uint32 gdi_peak              = 8;  // пиковое значение GDI с момента запуска SW
+  int64  free_system_memory_mb = 9;  // свободная физическая RAM в системе (MB)
+  ResourcePressure resource_pressure = 10; // worst-case давление по всем ресурсам
 }
 
 // ── Cancel ───────────────────────────────────────────────────────────────────
 
-// Определяет операции для отмены.
+// Определяет операцию для отмены.
 message CancelRequest {
-  // ID операций для отмены (из GetStatus → operations[*].id).
+  // ID операции для отмены (из GetStatus → current_operation.id).
   // Не должен быть пустым; иначе возвращается INVALID_ARGUMENT.
-  repeated string operation_ids = 1;
+  string operation_id = 1;
 }
 
 // Результат вызова Cancel.
 message CancelResponse {
-  int32           cancelled_count = 1; // количество отменённых операций
-  repeated string not_found_ids   = 2; // ID, которые не найдены (уже завершены или никогда не существовали)
+  bool cancelled = 1; // true если операция найдена и отменена, false если не найдена
 }
 
 // ── Enums ─────────────────────────────────────────────────────────────────────
@@ -178,7 +175,6 @@ enum OperationType {
 
 enum OperationStatus {
   OPERATION_STATUS_UNSPECIFIED = 0;
-  OPERATION_STATUS_PENDING     = 1; // в очереди, ещё не запущена
-  OPERATION_STATUS_RUNNING     = 2; // выполняется
-  OPERATION_STATUS_CANCELLING  = 3; // Cancel вызван, ждём безопасной границы
+  OPERATION_STATUS_RUNNING     = 1; // выполняется
+  OPERATION_STATUS_CANCELLING  = 2; // Cancel вызван, ждём безопасной границы
 }
