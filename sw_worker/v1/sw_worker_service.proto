@@ -16,10 +16,13 @@ service SwWorkerService {
   // Возвращает один merged граф (при directory scan — все корни объединены).
   // Деталь без ссылок даёт граф из одного узла.
   //
+  // Ответ: oneof outcome — либо CollectResult (бизнес-результат),
+  // либо MaintenanceSignal (плановый reboot, повторить запрос после восстановления).
+  //
   // Ошибки:
   //   INVALID_ARGUMENT    — path не существует или не является SW-файлом / каталогом
   //   RESOURCE_EXHAUSTED  — буфер занят (выполняется другая операция)
-  //   UNAVAILABLE         — процесс SolidWorks не готов
+  //   UNAVAILABLE         — процесс SolidWorks не готов или аварийная перезагрузка
   //   INTERNAL            — непредвиденный сбой SW
   rpc CollectDependencies(CollectDependenciesRequest) returns (CollectDependenciesResponse);
 
@@ -31,15 +34,21 @@ service SwWorkerService {
   // сначала детали, затем сборки, чертежи последними).
   // После записи и rebuild свойства перечитываются и возвращаются в response.
   //
+  // Ответ: oneof outcome — либо RebuildResult (бизнес-результат),
+  // либо MaintenanceSignal (плановый reboot, повторить запрос после восстановления).
+  //
   // Ошибки:
   //   INVALID_ARGUMENT    — working_directory не существует или граф пуст
   //   RESOURCE_EXHAUSTED  — буфер занят (выполняется другая операция)
-  //   UNAVAILABLE         — процесс SolidWorks не готов
+  //   UNAVAILABLE         — процесс SolidWorks не готов или аварийная перезагрузка
   //   INTERNAL            — непредвиденный сбой SW
   rpc RebuildWithProperties(RebuildWithPropertiesRequest) returns (RebuildWithPropertiesResponse);
 
   // Вернуть текущее состояние здоровья сервиса и текущей операции.
   // Не ставится в буфер — возвращает результат немедленно, не ожидая SW-сессии.
+  //
+  // Готовность к работе определяется как:
+  //   service_state == OPERATIONAL && process.running && !process.degraded
   rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
 
   // Отменить операцию по ID (из GetStatus → current_operation.id).
@@ -60,6 +69,14 @@ message CollectDependenciesRequest {
 }
 
 message CollectDependenciesResponse {
+  oneof outcome {
+    CollectResult     result      = 1;
+    MaintenanceSignal maintenance = 2;
+  }
+}
+
+// Бизнес-результат CollectDependencies.
+message CollectResult {
   // Merged граф зависимостей. При directory scan — все корни объединены в один граф
   // (disconnected components допустимы). Содержит уровни элементов и конфигураций,
   // а также missing/errors.
@@ -79,6 +96,14 @@ message RebuildWithPropertiesRequest {
 }
 
 message RebuildWithPropertiesResponse {
+  oneof outcome {
+    RebuildResult     result      = 1;
+    MaintenanceSignal maintenance = 2;
+  }
+}
+
+// Бизнес-результат RebuildWithProperties.
+message RebuildResult {
   // Результаты по каждому элементу в порядке обхода графа (leaves → roots).
   repeated ItemResult results = 1;
 
@@ -88,9 +113,82 @@ message RebuildWithPropertiesResponse {
   DependencyGraph graph = 2;
 }
 
+// ── Maintenance ──────────────────────────────────────────────────────────────
+
+// Сигнал планового обслуживания — возвращается ВМЕСТО бизнес-результата.
+// Оркестратор при получении: поллить GetStatus до service_state == OPERATIONAL,
+// затем повторить тот же запрос с тем же working_directory.
+// Partial results сохранены в checkpoint — Worker #2 продолжит с места остановки.
+message MaintenanceSignal {
+  string reason = 1; // human-readable ("atom table pressure exceeded threshold")
+}
+
 // ── GetStatus ────────────────────────────────────────────────────────────────
 
 message GetStatusRequest {}
+
+// Текущее состояние сервиса, процесса SolidWorks и Windows-сессии.
+//
+// Готовность к работе:
+//   service_state == SERVICE_STATE_OPERATIONAL
+//   && process.running == true
+//   && process.degraded == false
+message GetStatusResponse {
+  // Уровень давления на ресурсы. Общая шкала для process-level и session-level метрик.
+  // Пороги задаются через конфигурацию сервиса (SwWatchdogOptions, RecycleOptions).
+  enum ResourcePressure {
+    RESOURCE_PRESSURE_UNSPECIFIED = 0;
+    RESOURCE_PRESSURE_LOW         = 1; // < 50% порога
+    RESOURCE_PRESSURE_MODERATE    = 2; // >= 50%
+    RESOURCE_PRESSURE_ELEVATED    = 3; // >= 67%
+    RESOURCE_PRESSURE_HIGH        = 4; // >= 75% — рекомендуется завершить текущую работу
+    RESOURCE_PRESSURE_CRITICAL    = 5; // >= 100% — требуется немедленное действие
+  }
+
+  // Состояние жизненного цикла сервиса.
+  // SERVICE_STATE_OPERATIONAL (default) = готов принимать работу.
+  // Любое другое значение = не отправлять работу, поллить до OPERATIONAL.
+  enum ServiceState {
+    SERVICE_STATE_OPERATIONAL = 0; // нормальная работа, готов к работе
+    SERVICE_STATE_REBOOTING   = 1; // плановый machine reboot (~3-5 мин)
+  }
+
+  // Здоровье процесса SolidWorks (сбрасывается при перезапуске SW).
+  message ProcessHealth {
+    // Identity
+    uint32 pid                    = 1; // PID sldworks.exe, 0 если не запущен
+    bool   running                = 2; // процесс жив и отвечает на COM-вызовы
+
+    // State
+    bool             degraded     = 3; // SW в нестабильном состоянии после crash recovery
+    ResourcePressure pressure     = 4; // worst-case по GDI/USER/RAM
+
+    // Counters
+    int64  uptime_seconds         = 5; // секунд с момента запуска SW, -1 если не запущен
+    uint32 restart_count          = 6; // перезапуски SW с момента старта Worker (сбрасывается при reboot)
+
+    // Raw resource counters (диагностика)
+    uint32 gdi_objects            = 10;
+    uint32 user_objects           = 11;
+    uint32 gdi_peak               = 12;
+    int64  free_system_memory_mb  = 13;
+  }
+
+  // Здоровье Windows-сессии (сбрасывается только при machine reboot).
+  // Atom table — per-WindowStation ресурс, не освобождается при перезапуске процесса.
+  message SessionHealth {
+    uint32           atom_table_used = 1; // занятых atom entries в WinSta0
+    uint32           atom_table_max  = 2; // максимум (16384); 0 = мониторинг выключен
+    ResourcePressure pressure        = 3; // по порогу atom table
+  }
+
+  // ── Fields ──
+
+  ServiceState     service_state     = 1;
+  ProcessHealth    process           = 2;
+  SessionHealth    session           = 3;
+  OperationInfo    current_operation = 4;
+}
 
 // Описывает текущую операцию.
 message OperationInfo {
@@ -120,35 +218,6 @@ message PhaseProgress {
   int32  items_total = 3; // элементов в этой фазе
   int32  items_done  = 4; // завершённых в этой фазе
   int64  eta_seconds = 5; // оставшееся время этой фазы, -1 = неизвестно
-}
-
-// Текущее состояние здоровья сервиса и текущей операции.
-message GetStatusResponse {
-  // Уровень давления на ресурсы (GDI, USER, RAM). Worst-case по всем ресурсам.
-  // Caller использует для проактивного решения о рестарте SW между файлами.
-  enum ResourcePressure {
-    LOW       = 0; // < 50% любого порога
-    MODERATE  = 1; // >= 50% какого-то порога
-    ELEVATED  = 2; // >= 67% какого-то порога
-    HIGH      = 3; // >= 75% какого-то порога — рекомендуется завершить и рестартнуть
-    CRITICAL  = 4; // >= 100% какого-то порога — NeedsRestart() вернёт true
-  }
-
-  // Здоровье
-  bool  is_healthy = 1; // агрегат: sw_running && !degraded; false = сервис не может принимать работу
-  bool  sw_running = 2; // процесс SоlidWorks запущен и отвечает на COM-вызовы
-  bool  degraded   = 3; // SW в нестабильном состоянии (COM-crash, утечка); требуется перезапуск
-  int64 memory_mb  = 4; // рабочий набор процесса SW в МБ (legacy, см. free_system_memory_mb)
-
-  // Текущая операция. Отсутствует, если сервис простаивает.
-  OperationInfo current_operation = 5;
-
-  // Ресурсы SW-процесса (GDI/USER/RAM)
-  uint32 gdi_objects           = 6;  // текущее кол-во GDI объектов SW-процесса
-  uint32 user_objects          = 7;  // текущее кол-во USER объектов SW-процесса
-  uint32 gdi_peak              = 8;  // пиковое значение GDI с момента запуска SW
-  int64  free_system_memory_mb = 9;  // свободная физическая RAM в системе (MB)
-  ResourcePressure resource_pressure = 10; // worst-case давление по всем ресурсам
 }
 
 // ── Cancel ───────────────────────────────────────────────────────────────────
