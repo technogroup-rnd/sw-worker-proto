@@ -59,6 +59,17 @@ service SwWorkerService {
   // Ошибки:
   //   INVALID_ARGUMENT  — operation_id пуст
   rpc Cancel(CancelRequest) returns (CancelResponse);
+
+  // Подтвердить плановую перезагрузку машины (Level 2 recycling).
+  // Вызывается оркестратором после получения MaintenanceSignal и завершения
+  // файловых операций (дозаливка, синхронизация).
+  // Инициирует shutdown /r /t 0 — gRPC-ответ уходит до реального ребута
+  // (Process.Start возвращается немедленно, Windows shutdown sequence занимает секунды).
+  // После ребута Worker стартует автоматически (Task Scheduler onlogon).
+  //
+  // Ошибки:
+  //   FAILED_PRECONDITION — service_state != REBOOTING (MaintenanceSignal не был отправлен)
+  rpc ApproveReboot(ApproveRebootRequest) returns (ApproveRebootResponse);
 }
 
 // ── CollectDependencies ──────────────────────────────────────────────────────
@@ -192,10 +203,22 @@ message GetStatusResponse {
 
 // Описывает текущую операцию.
 message OperationInfo {
-  string          id     = 1; // UUID, назначаемый сервером; стабилен в течение всей жизни операции
-  OperationType   type   = 2;
-  string          path   = 3; // путь (CollectDependencies) или working_directory
-  OperationStatus status = 4;
+  enum Type {
+    TYPE_UNSPECIFIED             = 0;
+    TYPE_COLLECT_DEPENDENCIES    = 1;
+    TYPE_REBUILD_WITH_PROPERTIES = 2;
+  }
+
+  enum Status {
+    STATUS_UNSPECIFIED = 0;
+    STATUS_RUNNING     = 1; // выполняется
+    STATUS_CANCELLING  = 2; // Cancel вызван, ждём безопасной границы
+  }
+
+  string   id       = 1; // UUID, назначаемый сервером; стабилен в течение всей жизни операции
+  Type     type     = 2;
+  string   path     = 3; // путь (CollectDependencies) или working_directory
+  Status   status   = 4;
 
   // Прогресс операции. Отсутствует в короткое окно между приёмом и началом исполнения.
   OperationProgress progress = 5;
@@ -234,16 +257,11 @@ message CancelResponse {
   bool cancelled = 1; // true если операция найдена и отменена, false если не найдена
 }
 
-// ── Enums ─────────────────────────────────────────────────────────────────────
+// ── ApproveReboot ─────────────────────────────────────────────────────────────
 
-enum OperationType {
-  OPERATION_TYPE_UNSPECIFIED             = 0;
-  OPERATION_TYPE_COLLECT_DEPENDENCIES    = 1;
-  OPERATION_TYPE_REBUILD_WITH_PROPERTIES = 2;
-}
+// Подтверждение перезагрузки от оркестратора.
+message ApproveRebootRequest {}
 
-enum OperationStatus {
-  OPERATION_STATUS_UNSPECIFIED = 0;
-  OPERATION_STATUS_RUNNING     = 1; // выполняется
-  OPERATION_STATUS_CANCELLING  = 2; // Cancel вызван, ждём безопасной границы
-}
+// Пустой ответ — факт получения означает что shutdown инициирован.
+message ApproveRebootResponse {}
+
