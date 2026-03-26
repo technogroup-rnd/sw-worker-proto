@@ -71,7 +71,8 @@ message ItemNode {
 
   // Custom properties уровня файла (CustomPropertyManager("")).
   // Ключ — имя свойства, значение — resolved (вычисленное).
-  // Фильтруются по PropertyFilter.FileProperties из конфигурации сервиса.
+  // CollectDependencies: фильтруются по PropertyFilter.FileProperties из конфигурации сервиса.
+  // RebuildWithProperties: PropertyFilter.FileProperties ∪ ключи из write_properties.
   // Используется только для чтения; не записывается в SW операцией RebuildWithProperties.
   map<string, string> properties = 3;
 
@@ -99,7 +100,7 @@ message ItemNode {
   //   "Title", "Subject", "Author", "Keywords", "Comment" (R/W),
   //   "SavedBy", "CreateDate", "SaveDate" (R/O).
   // CollectDependencies: фильтруются по PropertyFilter.SummaryProperties из конфигурации сервиса.
-  // RebuildWithProperties: после write+save возвращаются все непустые поля (без фильтрации).
+  // RebuildWithProperties: PropertyFilter.SummaryProperties ∪ ключи из write_summary_properties.
   // Используется только для чтения; запись — через write_summary_properties.
   map<string, string> summary_properties = 6;
 
@@ -120,7 +121,8 @@ message ConfigNode {
 
   // Custom properties уровня конфигурации (CustomPropertyManager(config_name)).
   // Ключ — имя свойства, значение — resolved (вычисленное).
-  // Фильтруются по PropertyFilter.ConfigProperties из конфигурации сервиса.
+  // CollectDependencies: фильтруются по PropertyFilter.ConfigProperties из конфигурации сервиса.
+  // RebuildWithProperties: PropertyFilter.ConfigProperties ∪ ключи из write_properties.
   // Используется только для чтения; не записывается в SW операцией RebuildWithProperties.
   map<string, string> properties = 3;
 
