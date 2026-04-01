@@ -51,13 +51,9 @@ service SwWorkerService {
   //   service_state == OPERATIONAL && process.running && !process.degraded
   rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
 
-  // Отменить операцию по ID (из GetStatus → current_operation.id).
-  // operation_id не должен быть пустым — иначе возвращается INVALID_ARGUMENT.
+  // Отменить текущую операцию (одна операция за раз — ID не требуется).
   // Активная операция останавливается на ближайшей безопасной границе файла (не посередине файла).
   // Опрашивать GetStatus, пока current_operation не станет пустым, прежде чем освобождать хранилище.
-  //
-  // Ошибки:
-  //   INVALID_ARGUMENT  — operation_id пуст
   rpc Cancel(CancelRequest) returns (CancelResponse);
 
   // Подтвердить плановую перезагрузку машины (Level 2 recycling).
@@ -245,16 +241,15 @@ message PhaseProgress {
 
 // ── Cancel ───────────────────────────────────────────────────────────────────
 
-// Определяет операцию для отмены.
+// Пустой запрос — отменяет текущую операцию (одна за раз, ID не требуется).
 message CancelRequest {
-  // ID операции для отмены (из GetStatus → current_operation.id).
-  // Не должен быть пустым; иначе возвращается INVALID_ARGUMENT.
-  string operation_id = 1;
+  reserved 1;
+  reserved "operation_id";
 }
 
 // Результат вызова Cancel.
 message CancelResponse {
-  bool cancelled = 1; // true если операция найдена и отменена, false если не найдена
+  bool cancelled = 1; // true если операция выполнялась и отменена, false если простаивал
 }
 
 // ── ApproveReboot ─────────────────────────────────────────────────────────────
