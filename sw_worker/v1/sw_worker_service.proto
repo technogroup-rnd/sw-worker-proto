@@ -9,6 +9,23 @@ import "sw_worker/v1/common.proto";
 // при занятом буфере возвращает RESOURCE_EXHAUSTED.
 // Каждый запрос требует изолированного working_directory с flat-copy всех
 // нужных файлов (все файлы в одном каталоге, уникальные имена — ответственность оркестратора).
+//
+// ── Crash recovery (Level 2 restart) ────────────────────────────────────────
+//
+// Worker сохраняет прогресс операции в persistent storage. После незапланированного
+// перезапуска (crash, reboot) состояние in_progress операции остаётся в БД.
+//
+// Контракт с оркестратором:
+//   • Чтобы возобновить прерванную операцию — оркестратор ДОЛЖЕН переотправить
+//     тот же запрос (тот же path / working_directory, тот же RPC) первым запросом
+//     после обнаружения восстановления Worker. Worker обнаружит незавершённую
+//     операцию и продолжит с последнего checkpoint.
+//   • Если оркестратор отправляет другой запрос или не переотправляет —
+//     предыдущая незавершённая операция считается abandoned и будет очищена
+//     Worker после завершения следующей операции.
+//
+// Инвариант: возможность resume доступна только до завершения следующей операции.
+// Worker не гарантирует хранение in_progress состояния дольше одного цикла запросов.
 service SwWorkerService {
 
   // Построить граф зависимостей для файлов по указанному пути.
@@ -56,12 +73,14 @@ service SwWorkerService {
   // Опрашивать GetStatus, пока current_operation не станет пустым, прежде чем освобождать хранилище.
   rpc Cancel(CancelRequest) returns (CancelResponse);
 
-  // Подтвердить плановую перезагрузку машины (Level 2 recycling).
-  // Вызывается оркестратором после получения MaintenanceSignal и завершения
-  // файловых операций (дозаливка, синхронизация).
+  // Подтвердить перезагрузку машины (Level 2 recycling).
+  // Шаг 2 протокола MaintenanceSignal — вызывается оркестратором после:
+  //   (a) получения MaintenanceSignal в ответе на Collect/Rebuild
+  //   (b) завершения своих файловых операций (sync, upload)
   // Инициирует shutdown /r /t 0 — gRPC-ответ уходит до реального ребута
   // (Process.Start возвращается немедленно, Windows shutdown sequence занимает секунды).
   // После ребута Worker стартует автоматически (Task Scheduler onlogon).
+  // Далее оркестратор переходит к шагу 3 протокола: poll GetStatus до OPERATIONAL.
   //
   // Ошибки:
   //   FAILED_PRECONDITION — service_state != REBOOTING (MaintenanceSignal не был отправлен)
@@ -122,10 +141,24 @@ message RebuildResult {
 
 // ── Maintenance ──────────────────────────────────────────────────────────────
 
-// Сигнал планового обслуживания — возвращается ВМЕСТО бизнес-результата.
-// Оркестратор при получении: поллить GetStatus до service_state == OPERATIONAL,
-// затем повторить тот же запрос с тем же working_directory.
-// Partial results сохранены в checkpoint — Worker #2 продолжит с места остановки.
+// Сигнал необходимости перезагрузки машины — возвращается ВМЕСТО бизнес-результата.
+// Worker обнаружил давление на session-level ресурсы (atom table) и запрашивает
+// подтверждение перезагрузки. Операция не завершена, прогресс сохранён в state store.
+//
+// Протокол оркестратора при получении MaintenanceSignal:
+//   1. Завершить свои файловые операции (sync, upload) — working_directory
+//      должен остаться нетронутым для resume после ребута.
+//   2. Вызвать ApproveReboot RPC — это инициирует shutdown /r /t 0.
+//      gRPC-ответ придёт до фактического выключения машины.
+//   3. Поллить GetStatus (с retry при connection refused) до:
+//        service_state == OPERATIONAL && process.running && !process.degraded
+//   4. Переотправить ТОТ ЖЕ запрос (тот же path / working_directory).
+//      Worker обнаружит незавершённую операцию и продолжит с последнего checkpoint.
+//
+// Если оркестратор не вызовет ApproveReboot в течение таймаута
+// (ApproveRebootTimeoutMinutes, default 10 мин) — Worker инициирует reboot
+// самостоятельно. Оркестратор увидит connection drop и пойдёт по пути
+// аварийного перезапуска (poll GetStatus → resend).
 message MaintenanceSignal {
   string reason = 1; // human-readable ("atom table pressure exceeded threshold")
 }
