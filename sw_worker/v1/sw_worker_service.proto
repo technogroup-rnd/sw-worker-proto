@@ -176,13 +176,19 @@ message GetStatusRequest {}
 message GetStatusResponse {
   // Уровень давления на ресурсы. Общая шкала для process-level и session-level метрик.
   // Пороги задаются через конфигурацию сервиса (SwWatchdogOptions, RecycleOptions).
+  //
+  // Триггер рестарта — порог >= HIGH (для обоих типов давления). HIGH и CRITICAL
+  // операционно эквивалентны: оба инициируют рестарт на ближайшей границе файла.
+  // Разделение на 5 уровней нужно для диагностической гранулярности — отследить
+  // тренд нарастания давления до того как watchdog среагирует. Оркестратор не
+  // инициирует рестарт на основании этих значений — они информативны.
   enum ResourcePressure {
     RESOURCE_PRESSURE_UNSPECIFIED = 0;
     RESOURCE_PRESSURE_LOW         = 1; // < 50% порога
     RESOURCE_PRESSURE_MODERATE    = 2; // >= 50%
     RESOURCE_PRESSURE_ELEVATED    = 3; // >= 67%
-    RESOURCE_PRESSURE_HIGH        = 4; // >= 75% — рекомендуется завершить текущую работу
-    RESOURCE_PRESSURE_CRITICAL    = 5; // >= 100% — требуется немедленное действие
+    RESOURCE_PRESSURE_HIGH        = 4; // >= 75% — watchdog планирует рестарт на границе файла
+    RESOURCE_PRESSURE_CRITICAL    = 5; // >= 100% — watchdog планирует рестарт на границе файла (эквивалентно HIGH для действия, но сигнализирует превышение порога)
   }
 
   // Состояние жизненного цикла сервиса.
