@@ -200,32 +200,60 @@ message GetStatusResponse {
   }
 
   // Здоровье процесса SolidWorks (сбрасывается при перезапуске SW).
+  // Числовые поля — int32/int64 по Google API Design Guide (AIP-124): signed
+  // ints стандартизированы для JSON + cross-language interop; типичные значения
+  // всех счётчиков здесь далеки от Int32.MaxValue (PID, GDI/USER ≤ 10k, etc.).
   message ProcessHealth {
     // Identity
-    uint32 pid                    = 1; // PID sldworks.exe, 0 если не запущен
-    bool   running                = 2; // процесс жив и отвечает на COM-вызовы
+    int32 pid                    = 1; // PID sldworks.exe, 0 если не запущен
+    bool  running                = 2; // процесс жив и отвечает на COM-вызовы
 
     // State
-    bool             degraded     = 3; // SW в нестабильном состоянии после crash recovery
-    ResourcePressure pressure     = 4; // worst-case по GDI/USER/RAM
+    bool             degraded    = 3; // SW в нестабильном состоянии после crash recovery
+    ResourcePressure pressure    = 4; // worst-case по GDI/USER/RAM
 
     // Counters
-    int64  uptime_seconds         = 5; // секунд с момента запуска SW, -1 если не запущен
-    uint32 restart_count          = 6; // перезапуски SW с момента старта Worker (сбрасывается при reboot)
+    int64 uptime_seconds         = 5; // секунд с момента запуска SW, -1 если не запущен
+    int32 restart_count          = 6; // перезапуски SW с момента старта Worker (сбрасывается при reboot)
 
     // Raw resource counters (диагностика)
-    uint32 gdi_objects            = 10;
-    uint32 user_objects           = 11;
-    uint32 gdi_peak               = 12;
-    int64  free_system_memory_mb  = 13;
+    int32 gdi_objects            = 10;
+    int32 user_objects           = 11;
+    int32 gdi_peak               = 12;
+    int64 free_system_memory_mb  = 13;
   }
 
   // Здоровье Windows-сессии (сбрасывается только при machine reboot).
   // Atom table — per-WindowStation ресурс, не освобождается при перезапуске процесса.
   message SessionHealth {
-    uint32           atom_table_used = 1; // занятых atom entries в WinSta0
-    uint32           atom_table_max  = 2; // максимум (16384); 0 = мониторинг выключен
+    int32            atom_table_used = 1; // занятых atom entries в WinSta0
+    int32            atom_table_max  = 2; // максимум (16384); 0 = мониторинг выключен
     ResourcePressure pressure        = 3; // по порогу atom table
+  }
+
+  // Состояние lease'а из перспективы текущей операции. Зеркалит
+  // SwWatchdog.SwOperationState — оркестратор наблюдает переходы во время
+  // simulated crash test и в штатной работе.
+  enum LeaseState {
+    LEASE_STATE_UNSPECIFIED = 0; // lease не acquired (или между операциями)
+    LEASE_STATE_NOT_READY   = 1; // lease acquired, SW не готов (cold start / mid-relaunch)
+    LEASE_STATE_READY       = 2; // SW готов, Stage 3 complete — COM доступен
+    LEASE_STATE_RESTARTING  = 3; // SW упал, auto-relaunch в процессе
+    LEASE_STATE_FAILED      = 4; // launch-failure budget исчерпан для этого lease
+    LEASE_STATE_DISPOSING   = 5; // lease DisposeAsync вызван, state-transitions остановлены
+  }
+
+  // Здоровье watchdog-а: lease и launch-failure budget.
+  // operation_lease_active сигнализирует идёт ли операция (idle-shutdown
+  // подавлён пока true). sw_unavailable = true означает что watchdog
+  // терминально отказался запускать SW (достигнут LaunchFailureBudget) —
+  // оркестратор не должен retry без admin intervention.
+  message WatchdogHealth {
+    bool       operation_lease_active = 1; // есть хотя бы один активный lease
+    LeaseState lease_state            = 2; // state последнего acquired lease, или UNSPECIFIED
+    int32      launch_failure_counter = 3; // текущий process-level launch-failure counter
+    bool       sw_unavailable         = 4; // terminal: budget исчерпан, admin intervention needed
+    optional string unavailable_reason = 5; // человекочитаемая причина (заполнено когда sw_unavailable=true)
   }
 
   // ── Fields ──
@@ -234,6 +262,7 @@ message GetStatusResponse {
   ProcessHealth    process           = 2;
   SessionHealth    session           = 3;
   OperationInfo    current_operation = 4;
+  WatchdogHealth   watchdog          = 5;
 }
 
 // Описывает текущую операцию.
